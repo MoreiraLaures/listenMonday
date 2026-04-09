@@ -2,7 +2,8 @@ const { BOARD_ID, EQUIV, MAP_TTL_SEC } = require('../config');
 const { fetchBoardCodeToIdMap, fetchItemColumns, httpPostMonday } = require('./client');
 const { buildCreateItemMutation, buildUpdateMultipleColumnsMutation, buildColumnValuesFromRow, mondayColumnsToFriendlyMap } = require('./mutations');
 const { normalizeForCompare, formatForMonday } = require('../utils/formatters');
-const { fetchRowFromView, fetchRowFromViewFinal } = require('../db/client');
+const { fetchRowFromView, fetchAllFromView, fetchRowFromViewFinal } = require('../db/client');
+const { log } = require('../utils/logger');
 
 const codeIdCache = { ts: 0, map: {} };
 
@@ -12,7 +13,7 @@ async function getCodeIdMap() {
     const m = await fetchBoardCodeToIdMap(BOARD_ID);
     codeIdCache.map = m;
     codeIdCache.ts = now;
-    console.log(`[monday.map] loaded ${Object.keys(m).length} items`);
+    log(`[monday.map] ${Object.keys(m).length} itens carregados do board`);
   }
   return codeIdCache.map;
 }
@@ -36,6 +37,74 @@ function computeUpdatePayload(rowDbDict, rowMonFriendly) {
   return updates;
 }
 
+async function reconcileBoard(dbClient) {
+  log('[reconcile.start] Iniciando reconciliação completa do board...');
+
+  let rows;
+  try {
+    rows = await fetchAllFromView(dbClient);
+  } catch (e) {
+    log('[reconcile.err] Falha ao buscar todos os registros da view:', String(e).slice(0, 200));
+    return;
+  }
+
+  log(`[reconcile.view] ${rows.length} registros encontrados na view`);
+
+  const codeMap = await getCodeIdMap();
+  let created = 0, updated = 0, skipped = 0, errors = 0;
+
+  for (const row of rows) {
+    const code = String(row.code ?? '').trim();
+    if (!code) continue;
+
+    const itemId = codeMap[code];
+
+    if (!itemId) {
+      const colvals = buildColumnValuesFromRow(row);
+      const mut = buildCreateItemMutation(BOARD_ID, code, colvals);
+      try {
+        const resp = await httpPostMonday(mut);
+        if (resp.errors) {
+          log('[reconcile.create.err]', code, JSON.stringify(resp.errors).slice(0, 200));
+          errors++;
+        } else {
+          const newId = resp?.data?.create_item?.id;
+          log('[reconcile.create.ok]', code, `→ item ${newId}`);
+          codeMap[code] = newId;
+          created++;
+        }
+      } catch (e) {
+        log('[reconcile.create.ex]', code, String(e).slice(0, 200));
+        errors++;
+      }
+    } else {
+      try {
+        const itemJson = await fetchItemColumns(itemId);
+        const rowMon = mondayColumnsToFriendlyMap(itemJson);
+        const updates = computeUpdatePayload(row, rowMon);
+        if (!Object.keys(updates).length) {
+          skipped++;
+          continue;
+        }
+        const mut = buildUpdateMultipleColumnsMutation(BOARD_ID, updates, itemId);
+        const resp = await httpPostMonday(mut);
+        if (resp.errors) {
+          log('[reconcile.upd.err]', code, JSON.stringify(resp.errors).slice(0, 200));
+          errors++;
+        } else {
+          log('[reconcile.upd.ok]', code, Object.keys(updates));
+          updated++;
+        }
+      } catch (e) {
+        log('[reconcile.upd.ex]', code, String(e).slice(0, 200));
+        errors++;
+      }
+    }
+  }
+
+  log(`[reconcile.done] total=${rows.length} criados=${created} atualizados=${updated} sem_diff=${skipped} erros=${errors}`);
+}
+
 async function processCode(dbClient, codeStr) {
   const codeMap = await getCodeIdMap();
   const itemId = codeMap[codeStr];
@@ -48,14 +117,14 @@ async function processCode(dbClient, codeStr) {
       try {
         const resp = await httpPostMonday(mut);
         if (resp.errors) {
-          console.log('[create.err]', codeStr, resp.errors);
+          log('[create.err]', codeStr, JSON.stringify(resp.errors).slice(0, 200));
         } else {
           const newId = resp?.data?.create_item?.id;
-          console.log('[create.ok]', codeStr, newId);
+          log('[create.ok]', codeStr, `→ item ${newId}`);
           await refreshCodeIdMap();
         }
       } catch (e) {
-        console.log('[create.ex]', codeStr, String(e).slice(0, 200));
+        log('[create.ex]', codeStr, String(e).slice(0, 200));
       }
       return;
     }
@@ -64,52 +133,52 @@ async function processCode(dbClient, codeStr) {
     const rowMon = mondayColumnsToFriendlyMap(itemJson);
     const updates = computeUpdatePayload(row, rowMon);
     if (!Object.keys(updates).length) {
-      console.log('[update.skip]', codeStr, '(sem diferenças)');
+      log('[update.skip]', codeStr, '(sem diferenças)');
       return;
     }
     const mut = buildUpdateMultipleColumnsMutation(BOARD_ID, updates, itemId);
     try {
       const resp = await httpPostMonday(mut);
       if (resp.errors) {
-        console.log('[upd.err]', codeStr, resp.errors);
+        log('[upd.err]', codeStr, JSON.stringify(resp.errors).slice(0, 200));
       } else {
-        console.log('[upd.ok]', codeStr, Object.keys(updates));
+        log('[upd.ok]', codeStr, Object.keys(updates));
       }
     } catch (e) {
-      console.log('[upd.ex]', codeStr, String(e).slice(0, 200));
+      log('[upd.ex]', codeStr, String(e).slice(0, 200));
     }
     return;
   }
 
   if (itemId) {
-    console.log(`[final.lookup] code=${codeStr} não está no view principal; checando finalizados/recusados`);
+    log(`[final.lookup] code=${codeStr} não está no view principal; checando finalizados/recusados`);
     const rowFinal = await fetchRowFromViewFinal(dbClient, codeStr);
     if (!rowFinal) {
-      console.log(`[notfound.any] code=${codeStr} não está em nenhum view`);
+      log(`[notfound.any] code=${codeStr} não está em nenhum view`);
       return;
     }
     const itemJson = await fetchItemColumns(itemId);
     const rowMon = mondayColumnsToFriendlyMap(itemJson);
     const updates = computeUpdatePayload(rowFinal, rowMon);
     if (!Object.keys(updates).length) {
-      console.log('[update.skip]', codeStr, '(sem diferenças no finalizado)');
+      log('[update.skip]', codeStr, '(sem diferenças no finalizado)');
       return;
     }
     const mut = buildUpdateMultipleColumnsMutation(BOARD_ID, updates, itemId);
     try {
       const resp = await httpPostMonday(mut);
       if (resp.errors) {
-        console.log('[upd.err.final]', codeStr, resp.errors);
+        log('[upd.err.final]', codeStr, JSON.stringify(resp.errors).slice(0, 200));
       } else {
-        console.log('[final.update]', codeStr, Object.keys(updates));
+        log('[final.update]', codeStr, Object.keys(updates));
       }
     } catch (e) {
-      console.log('[upd.ex.final]', codeStr, String(e).slice(0, 200));
+      log('[upd.ex.final]', codeStr, String(e).slice(0, 200));
     }
     return;
   }
 
-  console.log(`[event.skip] code=${codeStr} sem item no Monday e fora dos views`);
+  log(`[event.skip] code=${codeStr} sem item no Monday e fora dos views`);
 }
 
-module.exports = { getCodeIdMap, refreshCodeIdMap, computeUpdatePayload, processCode };
+module.exports = { getCodeIdMap, refreshCodeIdMap, computeUpdatePayload, reconcileBoard, processCode };
