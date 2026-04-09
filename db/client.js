@@ -1,5 +1,5 @@
 const { Client } = require('pg');
-const { DB_CFG, VIEW_SQL, VIEW_SQL_FINAL } = require('../config');
+const { DB_CFG, VIEW_SQL, VIEW_SQL_ALL, VIEW_SQL_FINAL } = require('../config');
 
 async function connectDb() {
   const client = new Client(DB_CFG);
@@ -12,9 +12,14 @@ async function fetchRowFromView(client, code) {
   return res.rows[0] ?? null;
 }
 
+async function fetchAllFromView(client) {
+  const res = await client.query(VIEW_SQL_ALL);
+  return res.rows;
+}
+
 async function fetchRowFromViewFinal(client, code) {
   const res = await client.query(VIEW_SQL_FINAL, [code]);
   return res.rows[0] ?? null;
 }
 
-module.exports = { connectDb, fetchRowFromView, fetchRowFromViewFinal };
+module.exports = { connectDb, fetchRowFromView, fetchAllFromView, fetchRowFromViewFinal };

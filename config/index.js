@@ -12,7 +12,8 @@ const MONDAY_API_TOKEN = process.env.MONDAY_API_TOKEN || '';
 const MONDAY_URL = 'https://api.monday.com/v2';
 const BOARD_ID = parseInt(process.env.MONDAY_BOARD_ID || '0', 10);
 
-const VIEW_SQL = `SELECT * FROM "Geral".vw_monday_pedidos_logistica_diferente_pedidos_entregues WHERE code = $1`;
+const VIEW_SQL     = `SELECT * FROM "Geral".vw_monday_pedidos_logistica_diferente_pedidos_entregues WHERE code = $1`;
+const VIEW_SQL_ALL = `SELECT * FROM "Geral".vw_monday_pedidos_logistica_diferente_pedidos_entregues`;
 const VIEW_SQL_FINAL = `SELECT * FROM "Geral".vw_monday_pedidos_logistica_apenas_entregues WHERE code = $1`;
 
 const MAP_TTL_SEC = 600;
@@ -35,4 +36,4 @@ const EQUIV = {
   responsible:     'Consultor',
 };
 
-module.exports = { DB_CFG, MONDAY_API_TOKEN, MONDAY_URL, BOARD_ID, VIEW_SQL, VIEW_SQL_FINAL, MAP_TTL_SEC, EQUIV };
+module.exports = { DB_CFG, MONDAY_API_TOKEN, MONDAY_URL, BOARD_ID, VIEW_SQL, VIEW_SQL_ALL, VIEW_SQL_FINAL, MAP_TTL_SEC, EQUIV };
